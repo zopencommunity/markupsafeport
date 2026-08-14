@@ -1,0 +1,169 @@
+# bump: markupsafe-version /MARKUPSAFE_VERSION="(.*)"/ https://github.com/pallets/markupsafe.git|semver:*
+MARKUPSAFE_VERSION="3.0.3"
+
+###
+### Build control file for the markupsafe port
+###
+### markupsafe escapes strings for use in HTML/XML. It is a small C speedups
+### extension with a pure Python fallback, no external libraries and no runtime
+### dependencies. Jinja2 and everything built on it depend on this.
+###
+### Upstream tags are bare, with no "v" prefix, and the package lives under
+### src/ rather than at the repository root.
+###
+
+export ZOPEN_PROJECT_NAME="markupsafe"
+export ZOPEN_BUILD_LINE="STABLE"
+export ZOPEN_CATEGORIES="development library"
+
+export ZOPEN_STABLE_URL="https://github.com/pallets/markupsafe.git"
+export ZOPEN_STABLE_TAG="${MARKUPSAFE_VERSION}"
+export ZOPEN_DEV_URL="https://github.com/pallets/markupsafe.git"
+
+export ZOPEN_STABLE_DEPS="check_python"
+export ZOPEN_DEV_DEPS="check_python"
+export ZOPEN_RUNTIME_DEPS="check_python"
+
+export ZOPEN_BUILD_SYSTEM="Python"
+
+zopen_get_version() {
+  echo "${MARKUPSAFE_VERSION}"
+}
+
+zopen_python_test() {
+  MARKUPSAFE_EXPECTED_VERSION="${MARKUPSAFE_VERSION}" python - <<'PYEOF'
+import os
+import sys
+import sysconfig
+
+# Exercise the installed wheel, not the source tree. markupsafe keeps its
+# package under src/ so the build directory does not shadow it, unlike
+# simplejson or msgpack -- but the guard costs nothing and stops that being a
+# silent difference between ports.
+#
+# realpath on both sides: /tmp is a symlink to /$SYSNAME/tmp here, so a path
+# spelled /tmp/... and a working directory of /S0W1/tmp/... are the same place
+# while abspath compares them as different.
+_here = os.path.realpath(os.getcwd())
+sys.path = [p for p in sys.path
+            if p not in ("", ".") and os.path.realpath(p) != _here]
+
+failures = 0
+total = 0
+
+
+def check(label, fn):
+    global failures, total
+    total += 1
+    try:
+        if fn():
+            print("PASS:", label)
+        else:
+            print("FAIL:", label, file=sys.stderr)
+            failures += 1
+    except Exception as exc:
+        print("FAIL:", label, "-", exc, file=sys.stderr)
+        failures += 1
+
+
+try:
+    import markupsafe
+except ImportError as exc:
+    print("FAIL: import markupsafe -", exc, file=sys.stderr)
+    print("markupsafe FAILED to import on Python %s" % sys.version.split()[0])
+    sys.exit(1)
+
+check("imported from the installed wheel, not the source tree",
+      lambda: os.path.realpath(markupsafe.__file__).startswith(
+          os.path.realpath(sysconfig.get_paths()["purelib"])))
+
+
+def version_matches():
+    # markupsafe.__version__ is deprecated as of 3.0 and slated for removal in
+    # 3.1, and reading it emits a DeprecationWarning. Ask the metadata instead,
+    # which is also what upstream now tells you to do.
+    import importlib.metadata
+    return (importlib.metadata.version("markupsafe")
+            == os.environ["MARKUPSAFE_EXPECTED_VERSION"])
+
+
+check("version is the one this port builds", version_matches)
+
+# Everything below passes on the pure Python fallback, so pin down that the
+# compiled one is loaded. markupsafe dispatches escaping through
+# _escape_inner, which is rebound to the _speedups implementation when the
+# extension is present.
+check("the C speedups extension is in use",
+      lambda: markupsafe._escape_inner.__module__ == "markupsafe._speedups")
+
+check("escaping the five markup characters",
+      lambda: str(markupsafe.escape("<a href='x'>&\"")) 
+      == "&lt;a href=&#39;x&#39;&gt;&amp;&#34;")
+
+check("Markup is not escaped again",
+      lambda: str(markupsafe.escape(markupsafe.Markup("<b>bold</b>")))
+      == "<b>bold</b>")
+
+check("__html__ is honoured",
+      lambda: str(markupsafe.escape(
+          type("W", (), {"__html__": lambda self: "<i>ok</i>"})()))
+      == "<i>ok</i>")
+
+check("format interpolation escapes its arguments",
+      lambda: str(markupsafe.Markup("<p>{}</p>").format("<script>"))
+      == "<p>&lt;script&gt;</p>")
+
+check("concatenation escapes the plain side",
+      lambda: str(markupsafe.Markup("<b>") + "<i>") == "<b>&lt;i&gt;")
+
+# Non-ASCII through the C escaper, written as escapes rather than literals
+# because this script is read from stdin on an EBCDIC platform.
+check("non-ascii passes through unescaped",
+      lambda: str(markupsafe.escape("café 中")) == "café 中")
+check("non-ascii alongside markup characters",
+      lambda: str(markupsafe.escape("<é>")) == "&lt;é&gt;")
+
+# The escaped output is ASCII on the wire whatever the platform encoding is.
+check("escaped output encodes to the expected ASCII bytes",
+      lambda: str(markupsafe.escape("<&>")).encode("utf-8")
+      == b"\x26\x6c\x74\x3b\x26\x61\x6d\x70\x3b\x26\x67\x74\x3b")
+
+check("empty and long inputs",
+      lambda: str(markupsafe.escape("")) == ""
+      and len(str(markupsafe.escape("<" * 10000))) == 40000)
+
+print()
+print("markupsafe %s on Python %s  --  %d passed, %d failed" % (
+    __import__("importlib.metadata", fromlist=["version"]).version("markupsafe"),
+    sys.version.split()[0], total - failures, failures))
+sys.exit(1 if failures else 0)
+PYEOF
+}
+
+zopen_check_results() {
+  dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
+  # No "|| echo 0": grep -c prints 0 when nothing matches and also exits 1, so
+  # the fallback appends a second zero and the arithmetic dies with FSUM9224.
+  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null)
+  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null)
+  passed=${passed:-0}
+  failed=${failed:-0}
+  total=$((passed + failed))
+
+  interpreters=$(grep -c "^markupsafe .* on Python" "${chk}" 2>/dev/null)
+  interpreters=${interpreters:-0}
+  expected=$(echo "${ZOPEN_PYTHON_VERSIONS:-3.12 3.13 3.14}" | wc -w | tr -d ' ')
+  if [ "${interpreters}" -lt "${expected}" ]; then
+    silent=$((expected - interpreters))
+    failed=$((failed + silent))
+    total=$((total + silent))
+  fi
+
+  echo "actualFailures:${failed}"
+  echo "totalTests:${total}"
+  echo "expectedFailures:0"
+}
+
+zopen_append_to_validate_install() {
+  echo "python3 -c \"import markupsafe, importlib.metadata; print('markupsafe', importlib.metadata.version('markupsafe'))\""
+}
