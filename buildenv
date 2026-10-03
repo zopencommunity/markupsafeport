@@ -1,5 +1,5 @@
 # bump: markupsafe-version /MARKUPSAFE_VERSION="(.*)"/ https://github.com/pallets/markupsafe.git|semver:*
-MARKUPSAFE_VERSION="3.0.3"
+MARKUPSAFE_VERSION="3.0.4"
 
 ###
 ### Build control file for the markupsafe port
